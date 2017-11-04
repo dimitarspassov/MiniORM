@@ -25,11 +25,36 @@ public class EntityManager<E> implements DbContext<E> {
         primary.setAccessible(true);
         Object value = primary.get(entity);
 
+        if (!this.checkIfTableExists(entity.getClass())) {
+            this.doCreate(entity.getClass());
+        } else {
+
+            for (Field field : entity.getClass().getDeclaredFields()) {
+                field.setAccessible(true);
+
+                if (this.checkIfFieldExistsInDb(entity.getClass(), field)) {
+                    this.doAlter(entity.getClass());
+                    break;
+                }
+            }
+        }
+
+
         if (value == null || (long) value <= 0) {
             return this.doInsert(entity, primary);
         }
 
         return this.doUpdate(entity, primary);
+    }
+
+    @Override
+    public boolean delete(Class<E> table, String where) throws SQLException {
+
+        String query = "DELETE FROM " + this.getTableName(table);
+        if (where != null) {
+            query += " WHERE " + where;
+        }
+        return this.connection.prepareStatement(query).execute();
     }
 
     @Override
@@ -205,5 +230,93 @@ public class EntityManager<E> implements DbContext<E> {
         } else if (field.getType().equals(LocalDate.class)) {
             field.set(instance, rs.getDate(fieldName).toLocalDate());
         }
+    }
+
+    private void doCreate(Class entity) throws SQLException {
+        String tableName = this.getTableName(entity);
+        String query = "CREATE TABLE IF NOT EXISTS " + tableName + "( ";
+
+        Field[] fields = entity.getDeclaredFields();
+
+        for (int i = 0; i < fields.length; i++) {
+            Field field = fields[i];
+            field.setAccessible(true);
+
+            if (!field.isAnnotationPresent(Column.class)) {
+                continue;
+            }
+            query += field.getName() + " " + this.getDbType(field);
+
+            if (field.isAnnotationPresent(Id.class)) {
+                query += " PRIMARY KEY AUTO_INCREMENT";
+            }
+
+            if (i < fields.length - 1) {
+                query += ", ";
+            }
+        }
+
+        query += ")";
+        this.connection.prepareStatement(query).execute();
+    }
+
+    private String getDbType(Field field) {
+        field.setAccessible(true);
+
+        if (field.getType() == int.class || field.getType() == Integer.class) {
+            return "INT";
+        } else if (field.getType() == long.class || field.getType() == Long.class) {
+            return "INT";
+        } else if (field.getType().equals(String.class)) {
+            return "VARCHAR(200)";
+        } else if (field.getType() == boolean.class || field.getType() == Boolean.class) {
+            return "BIT";
+        } else if (field.getType().equals(LocalDate.class)) {
+            return "DATE";
+        } else if (field.getType() == byte.class || field.getType() == Byte.class) {
+            return "TINYINT";
+        } else if (field.getType() == double.class || field.getType() == Double.class) {
+            return "DOUBLE";
+        } else if (field.getType() == float.class || field.getType() == Float.class) {
+            return "FLOAT";
+        }
+        return "";
+    }
+
+    private void doAlter(Class entity) throws SQLException {
+        String tableName = this.getTableName(entity);
+        String query = "ALTER TABLE " + tableName;
+
+        Field[] fields = entity.getDeclaredFields();
+        for (int i = 0; i < fields.length; i++) {
+            Field field = fields[i];
+            field.setAccessible(true);
+            if (!this.checkIfFieldExistsInDb(entity, field)) {
+                query += " ADD " + field.getName() + " " + this.getDbType(field);
+
+
+                if (i < fields.length - 1) {
+                    query += ", ";
+                }
+            }
+        }
+        this.connection.prepareStatement(query).execute();
+    }
+
+    private boolean checkIfFieldExistsInDb(Class entity, Field field) throws SQLException {
+        String fieldName = field.getAnnotation(Column.class).name();
+        String tableName = this.getTableName(entity);
+
+        String query = "SHOW COLUMNS FROM " + tableName + " LIKE '" + fieldName + "' ;";
+
+        ResultSet rs = this.connection.createStatement().executeQuery(query);
+        return rs.isBeforeFirst();
+    }
+
+    private boolean checkIfTableExists(Class entity) throws SQLException {
+        String tableName = this.getTableName(entity);
+        String query = "SHOW TABLES LIKE '" + tableName + "';";
+        ResultSet rs = this.connection.createStatement().executeQuery(query);
+        return rs.isBeforeFirst();
     }
 }

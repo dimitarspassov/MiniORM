@@ -6,6 +6,8 @@ public interface DbContext<E> {
 
     boolean persist(E entity) throws IllegalAccessException, SQLException;
 
+    boolean delete(Class<E> table, String where) throws SQLException;
+
     Iterable<E> find(Class<E> table) throws SQLException, IllegalAccessException, InstantiationException;
 
     Iterable<E> find(Class<E> table, String where) throws SQLException, IllegalAccessException, InstantiationException;
