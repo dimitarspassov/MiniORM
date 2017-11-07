@@ -3,7 +3,9 @@ package orm;
 import annotations.Column;
 import annotations.Entity;
 import annotations.Id;
+import orm.strategies.SchemaInitializationStrategy;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.sql.*;
 import java.time.LocalDate;
@@ -14,9 +16,15 @@ import java.util.List;
 public class EntityManager<E> implements DbContext<E> {
 
     private Connection connection;
+    private String dataSource;
+    private SchemaInitializationStrategy strategy;
 
-    public EntityManager(Connection connection) {
+
+    public EntityManager(Connection connection, String dataSource, SchemaInitializationStrategy strategy) throws SQLException, IOException, ClassNotFoundException {
         this.connection = connection;
+        this.dataSource = dataSource;
+        this.strategy = strategy;
+        this.strategy.execute();
     }
 
     @Override
@@ -24,21 +32,6 @@ public class EntityManager<E> implements DbContext<E> {
         Field primary = this.getId(entity.getClass());
         primary.setAccessible(true);
         Object value = primary.get(entity);
-
-        if (!this.checkIfTableExists(entity.getClass())) {
-            this.doCreate(entity.getClass());
-        } else {
-
-            for (Field field : entity.getClass().getDeclaredFields()) {
-                field.setAccessible(true);
-
-                if (this.checkIfFieldExistsInDb(entity.getClass(), field)) {
-                    this.doAlter(entity.getClass());
-                    break;
-                }
-            }
-        }
-
 
         if (value == null || (long) value <= 0) {
             return this.doInsert(entity, primary);
@@ -98,6 +91,10 @@ public class EntityManager<E> implements DbContext<E> {
         String query = "SELECT * FROM " + this.getTableName(table).toLowerCase() + " LIMIT 1";
         ResultSet rs = stmt.executeQuery(query);
         E entity = table.newInstance();
+
+        if (!rs.isBeforeFirst()) {
+            return null;
+        }
         rs.next();
         this.fillEntity(table, rs, entity);
         return entity;
@@ -110,6 +107,9 @@ public class EntityManager<E> implements DbContext<E> {
                 " WHERE 1 " + (where != null ? " AND " + where : "") + " LIMIT 1";
         ResultSet rs = stmt.executeQuery(query);
         E entity = table.newInstance();
+        if (!rs.isBeforeFirst()) {
+            return null;
+        }
         rs.next();
         this.fillEntity(table, rs, entity);
         return entity;
@@ -192,7 +192,7 @@ public class EntityManager<E> implements DbContext<E> {
 
         if (entity.isAnnotationPresent(Entity.class)) {
             Entity entityAnnotation = entity.getAnnotation(Entity.class);
-            return entityAnnotation.name();
+            return this.dataSource + "." + entityAnnotation.name();
         }
 
         throw new UnsupportedOperationException("Unrecognized entity!");
@@ -212,111 +212,27 @@ public class EntityManager<E> implements DbContext<E> {
         Field[] fields = table.getDeclaredFields();
         for (Field field : fields) {
             field.setAccessible(true);
-            //String name = field.getName();
             fillField(field, entity, rs, field.getAnnotation(Column.class).name());
         }
     }
 
     private static void fillField(Field field, Object instance, ResultSet rs, String fieldName) throws SQLException, IllegalAccessException {
         field.setAccessible(true);
-        if (field.getType() == int.class || field.getType() == Integer.class) {
-            field.set(instance, rs.getInt(fieldName));
-        } else if (field.getType() == long.class || field.getType() == Long.class) {
-            field.set(instance, rs.getLong(fieldName));
-        } else if (field.getType().equals(String.class)) {
-            field.set(instance, rs.getString(fieldName));
-        } else if (field.getType() == boolean.class || field.getType() == Boolean.class) {
-            field.set(instance, rs.getBoolean(fieldName));
-        } else if (field.getType().equals(LocalDate.class)) {
-            field.set(instance, rs.getDate(fieldName).toLocalDate());
-        }
-    }
 
-    private void doCreate(Class entity) throws SQLException {
-        String tableName = this.getTableName(entity);
-        String query = "CREATE TABLE IF NOT EXISTS " + tableName + "( ";
-
-        Field[] fields = entity.getDeclaredFields();
-
-        for (int i = 0; i < fields.length; i++) {
-            Field field = fields[i];
-            field.setAccessible(true);
-
-            if (!field.isAnnotationPresent(Column.class)) {
-                continue;
+        try {
+            if (field.getType() == int.class || field.getType() == Integer.class) {
+                field.set(instance, rs.getInt(fieldName));
+            } else if (field.getType() == long.class || field.getType() == Long.class) {
+                field.set(instance, rs.getLong(fieldName));
+            } else if (field.getType().equals(String.class)) {
+                field.set(instance, rs.getString(fieldName));
+            } else if (field.getType() == boolean.class || field.getType() == Boolean.class) {
+                field.set(instance, rs.getBoolean(fieldName));
+            } else if (field.getType().equals(LocalDate.class)) {
+                field.set(instance, rs.getDate(fieldName).toLocalDate());
             }
-            query += field.getName() + " " + this.getDbType(field);
-
-            if (field.isAnnotationPresent(Id.class)) {
-                query += " PRIMARY KEY AUTO_INCREMENT";
-            }
-
-            if (i < fields.length - 1) {
-                query += ", ";
-            }
+        } catch (NullPointerException npe) {
+            field.set(instance,null);
         }
-
-        query += ")";
-        this.connection.prepareStatement(query).execute();
-    }
-
-    private String getDbType(Field field) {
-        field.setAccessible(true);
-
-        if (field.getType() == int.class || field.getType() == Integer.class) {
-            return "INT";
-        } else if (field.getType() == long.class || field.getType() == Long.class) {
-            return "INT";
-        } else if (field.getType().equals(String.class)) {
-            return "VARCHAR(200)";
-        } else if (field.getType() == boolean.class || field.getType() == Boolean.class) {
-            return "BIT";
-        } else if (field.getType().equals(LocalDate.class)) {
-            return "DATE";
-        } else if (field.getType() == byte.class || field.getType() == Byte.class) {
-            return "TINYINT";
-        } else if (field.getType() == double.class || field.getType() == Double.class) {
-            return "DOUBLE";
-        } else if (field.getType() == float.class || field.getType() == Float.class) {
-            return "FLOAT";
-        }
-        return "";
-    }
-
-    private void doAlter(Class entity) throws SQLException {
-        String tableName = this.getTableName(entity);
-        String query = "ALTER TABLE " + tableName;
-
-        Field[] fields = entity.getDeclaredFields();
-        for (int i = 0; i < fields.length; i++) {
-            Field field = fields[i];
-            field.setAccessible(true);
-            if (!this.checkIfFieldExistsInDb(entity, field)) {
-                query += " ADD " + field.getName() + " " + this.getDbType(field);
-
-
-                if (i < fields.length - 1) {
-                    query += ", ";
-                }
-            }
-        }
-        this.connection.prepareStatement(query).execute();
-    }
-
-    private boolean checkIfFieldExistsInDb(Class entity, Field field) throws SQLException {
-        String fieldName = field.getAnnotation(Column.class).name();
-        String tableName = this.getTableName(entity);
-
-        String query = "SHOW COLUMNS FROM " + tableName + " LIKE '" + fieldName + "' ;";
-
-        ResultSet rs = this.connection.createStatement().executeQuery(query);
-        return rs.isBeforeFirst();
-    }
-
-    private boolean checkIfTableExists(Class entity) throws SQLException {
-        String tableName = this.getTableName(entity);
-        String query = "SHOW TABLES LIKE '" + tableName + "';";
-        ResultSet rs = this.connection.createStatement().executeQuery(query);
-        return rs.isBeforeFirst();
     }
 }
